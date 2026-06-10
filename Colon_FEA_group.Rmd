@@ -1,0 +1,189 @@
+---
+title: "Colon_FEA_group"
+author: "Narine Fischer"
+date: "2025-09-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Attention! Only execute this code after executing all code in the file "Colon_DEA_groups.Rmd".
+# Libraries
+
+```{r libraries}
+library(AnnotationDbi)
+library(GOstats)
+library(org.Hs.eg.db)
+```
+
+# Functional Enrichment Analysis
+
+## Obtaining Entrez Ids
+Before carrying out the Functional Enrichment Analysis (FEA), we need to obtain two lists of Entrez ids: a list with the gene universe against which the DEGs will be compared, and the list of DEGs obtained from the Differential Expression Analysis (DEA), fortunately, the final object of the DEA already carries the Entrez ids of the Differentially Expressed Genes (DEGs). 
+
+```{r obtain_entrez_ids}
+# Gene Universe Entrez IDs
+gene_universe <- rownames(se)
+ensembl_ids <- sub("\\.\\d+$", "", gene_universe)
+gene_universe_entrez <- mapIds(org.Hs.eg.db,
+                        keys=ensembl_ids,
+                        column = "ENTREZID",
+                        keytype = "ENSEMBL",
+                        multiVals = "first")
+
+# DEGs Entrez ids
+genes <- rownames(gene_count_df_fdr)
+degs_entrez_ids <- mapIds(org.Hs.eg.db,
+                          keys= genes,
+                          column = "ENTREZID",
+                          keytype = "SYMBOL",
+                          multiVals = "first")
+
+# Remove NAs from both
+gene_universe_entrez <- gene_universe_entrez[!is.na(gene_universe_entrez)]
+degs_entrez_ids <- degs_entrez_ids[!is.na(degs_entrez_ids)]
+```
+## Create parameters object
+
+To carry a FEA, a parameters object is needed, specifying the gene universe, the DEGs and the ontology, as we want to see which functions are being altered, "Biological Process" will be used.
+
+```{r params}
+params_fea <- new("GOHyperGParams", geneIds=degs_entrez_ids, universeGeneIds= gene_universe_entrez, annotation="org.Hs.eg.db", ontology="BP", pvalueCutoff=0.05, testDirection="over")
+
+# To ensure obtaining just the relevant processes, and to take into account the hierarchical nature of gene ontology. The analysis will be conditional, so that parent terms don't result significant just because the child term is.
+
+conditional(params_fea) <- TRUE
+```
+
+## Functional Enrichment Analysis.
+
+Finally, the Functional Enrichment Analysis can be performed.
+
+```{r FEA}
+hgOver <- hyperGTest(params_fea)
+hgOver
+```
+
+# Distribution of pvalues
+
+From the previous result, we can plot the distribution of pvalues to see if there are low pvalues.
+
+```{r pval_distr}
+hist(pvalues(hgOver), xlab="P-values", main="", las=1)
+```
+Although there are low P-values, the distribution is surprising, as normally, there are more lower P-values, but in this case, the highest bar in with a high p-value. 
+
+## obtain the summary of the results and filter them
+
+To obtain the significant terms, a filtering will be carried out, for it, the summary of the results is needed. Only terms that have associated at least 3 genes will be taken into account, less might be unreliable; also, terms with more than 300 genes associated provide little insight. Finally, significant terms must at least contain 3 DEGs to be kept, to ensure that there are enough DEGs assigned to the term
+
+```{r summary}
+# Obtain summary
+resHgOver<- summary(hgOver)
+
+# Filter
+mask <- resHgOver$Size >= 3 & resHgOver$Size <= 300 & resHgOver$Count >=3
+resHgOver <- resHgOver[mask,]
+```
+
+## Order the results
+
+Ordering the results allows to have the more significant first in the table
+
+```{r order}
+ord <- order(resHgOver$OddsRatio, decreasing = TRUE)
+resHgOver <- resHgOver[ord,]
+```
+
+# Compare Pvalue distribution
+
+After filtering, the distribution of P-values can be compared in order to ensure that only the terms with the lowest P-values remain.
+
+```{r pval_distr_2}
+pvals <- pvalues(hgOver)
+par(mfrow=c(1,2))
+hist(pvals, xlab="P-values", main="Conditional test before filtering", las=1)
+hist(pvals[resHgOver$GOBPID], xlab="P-values", xlim=c(0,1), main="Conditional test after filtering", las=1)
+```
+
+It is confirmed that only those terms with lowest P-values remain present
+
+## Obtain number of significant terms
+The number of significant terms is obtained using an FDR of 0.1 as the threshold.
+```{r adj_pval}
+sum(p.adjust(pvalues(hgOver)[resHgOver$GOBPID], method = "fdr")< 0.1)
+```
+
+## Obtain the genes per pathway
+To better understand which DEGs are affecting the significant pathways, each gene is associated to the term they are linked to in Gene Ontology.
+```{r genes_per_pathway}
+geneIDs <- geneIdsByCategory(hgOver)[resHgOver$GOBPID]
+geneSYMs <- sapply(geneIDs, function(id)  AnnotationDbi::select(org.Hs.eg.db, columns = "SYMBOL", key = id, keytype = "ENTREZID")$SYMBOL)
+geneSYMs<- sapply(geneSYMs, paste, collapse = ", ")
+goresults <- cbind(resHgOver, Genes = geneSYMs)
+rownames(goresults) <- seq_len(nrow(goresults))
+```
+
+## Separate genes according to their expression
+
+Finally, the terms have been obtained with their respective DEGs, but whether they are overexpressed or underexpressed, is unknown. To solve this, a function has been created.
+
+```{r separate_DEGs}
+separate_genes<- function(goresult, DEA_data){
+  over_genes_entrez<- c((DEA_data %>% filter(as.numeric(logFC) > 0))$symbol)
+  down_genes_entrez<- c((DEA_data %>% filter(as.numeric(logFC) < 0))$symbol)
+  separation<- goresult %>% rowwise() %>% mutate (
+    temp = list(strsplit(Genes, split=", ")[[1]]),
+    n_over = length(temp[temp %in% over_genes_entrez]),
+    over_gene = paste(temp[temp %in% over_genes_entrez], collapse=", "),
+    n_under = length(temp[temp %in% down_genes_entrez]),
+    under_gene= paste(temp[temp %in% down_genes_entrez], collapse=", ")) %>% ungroup() %>% dplyr::select(-temp)
+  return(separation)
+}
+
+goresults_detailed <- separate_genes(goresults, DEGtable)
+
+```
+
+## Exporting the results
+
+
+```{r export_data}
+write.xlsx(goresults_detailed, "FEA_results_group.xlsx")
+```
+
+# Location Enrichment Analysis (I just invented the name)
+
+To carry a FEA, normally we would create a parameters object in which the ontology "Biological process" is specified as the ontology to check in order to know which function are more affected. However, here, the location of the resulting proteins is the aspect desired, therefore, "biological process" is not the correct ontology. Instead, "Cellular component" will be the one selected, as it explains where in the cell/complex the protein acts. In addition, as technically we are not looking at function, it will be called Location Enrichment Analysis (LEA). For the rest, teh steps are the same.
+
+```{r LEA}
+params_lea <- new("GOHyperGParams", geneIds=degs_entrez_ids, universeGeneIds= gene_universe_entrez, annotation="org.Hs.eg.db", ontology="CC", pvalueCutoff=0.05, testDirection="over")
+
+# To ensure obtaining just the relevant processes, and to take into account the hierarchical nature of gene ontology. The analysis will be conditional, so that parent terms don't result significant just because the child term is.
+
+conditional(params_lea) <- TRUE
+
+hgOver <- hyperGTest(params_lea)
+
+# Obtain summary
+resHgOver<- summary(hgOver)
+
+# Filter
+mask <- resHgOver$Size >= 3 & resHgOver$Size <= 300 & resHgOver$Count >=3
+resHgOver <- resHgOver[mask,]
+
+ord <- order(resHgOver$OddsRatio, decreasing = TRUE)
+resHgOver <- resHgOver[ord,]
+
+geneIDs <- geneIdsByCategory(hgOver)[resHgOver$GOCCID]
+geneSYMs <- sapply(geneIDs, function(id)  AnnotationDbi::select(org.Hs.eg.db, columns = "SYMBOL", key = id, keytype = "ENTREZID")$SYMBOL)
+geneSYMs<- sapply(geneSYMs, paste, collapse = ", ")
+goresults <- cbind(resHgOver, Genes = geneSYMs)
+rownames(goresults) <- seq_len(nrow(goresults))
+
+goresults_detailed <- separate_genes(goresults, DEGtable)
+
+write.xlsx(goresults_detailed, "LEA_results_group.xlsx")
+```
