@@ -73,6 +73,6 @@ And making random groups that have the same number of tumoral samples as healthy
 
 The workflow generates tables and visualizations describing differentially expressed genes and enriched biological functions associated with colon cancer samples.
 
-## Notes
+## License
 
-This repository was developed as a research analysis workflow and is not intended as a production-ready software package.
+This project is licensed under the MIT License.
