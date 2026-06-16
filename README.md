@@ -1,5 +1,7 @@
 # Colon Cancer Transcriptomic Analysis
 
+[![DOI](https://zenodo.org/badge/1264135007.svg)](https://doi.org/10.5281/zenodo.20717314)
+
 This repository contains the RMarkdown code used to perform:
 
 * Differential Expression Analysis (DEA)
